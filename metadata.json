@@ -1,0 +1,16 @@
+{
+  "body_part": "script",
+  "bindings": [
+    { "name": "WASM", "type": "wasm_module", "part": "wasm" },
+    {
+      "name": "GoatsNs",
+      "type": "kv_namespace",
+      "namespace_id": "__id__"
+    },
+    {
+      "name": "FavoritesNs",
+      "type": "kv_namespace",
+      "namespace_id": "__id__"
+    }
+  ]
+}

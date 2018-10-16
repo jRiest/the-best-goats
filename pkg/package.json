@@ -1,0 +1,15 @@
+{
+  "name": "the-best-goats",
+  "collaborators": [
+    "Jake Riesterer <jriesterer@cloudflare.com>"
+  ],
+  "version": "0.1.0",
+  "files": [
+    "the_best_goats_bg.wasm",
+    "the_best_goats.js",
+    "the_best_goats.d.ts"
+  ],
+  "module": "the_best_goats.js",
+  "types": "the_best_goats.d.ts",
+  "sideEffects": "false"
+}
