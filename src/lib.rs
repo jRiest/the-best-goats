@@ -1,20 +1,20 @@
+mod extensions;
 mod templates;
 mod utils;
 
+use crate::extensions::*;
 use cfg_if::cfg_if;
 use cookie::Cookie;
 use handlebars::Handlebars;
 use http::StatusCode;
-use js_sys::{Array, Error, Promise};
+use js_sys::{Array, Promise};
 use lazy_static::lazy_static;
 use serde::{Deserialize, Serialize};
-use std::fmt::Display;
 use time::Duration;
 use url::Url;
 use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
-use wasm_bindgen_futures::future_to_promise;
-use wasm_bindgen_futures::JsFuture;
+use wasm_bindgen_futures::{future_to_promise, JsFuture};
 use web_sys::{FetchEvent, FormData, Headers, Request, Response, ResponseInit};
 
 cfg_if! {
@@ -103,53 +103,6 @@ lazy_static! {
 
         reg
     };
-}
-
-trait ToJsResult<T> {
-    fn ok_or_js_err(self) -> Result<T, JsValue>;
-}
-
-trait ToJsResultWithMsg<T> {
-    fn ok_or_js_err_with_msg(self, msg: &str) -> Result<T, JsValue>;
-}
-
-impl<T> ToJsResult<T> for Option<T> {
-    fn ok_or_js_err(self) -> Result<T, JsValue> {
-        match self {
-            Some(v) => Ok(v),
-            None => Err(JsValue::from(Error::new("expected Some but found None"))),
-        }
-    }
-}
-
-impl<T> ToJsResultWithMsg<T> for Option<T> {
-    fn ok_or_js_err_with_msg(self, msg: &str) -> Result<T, JsValue> {
-        match self {
-            Some(v) => Ok(v),
-            None => Err(JsValue::from(Error::new(msg))),
-        }
-    }
-}
-
-impl<T, E> ToJsResult<T> for Result<T, E>
-where
-    E: Display,
-{
-    fn ok_or_js_err(self) -> Result<T, JsValue> {
-        match self {
-            Ok(v) => Ok(v),
-            Err(e) => Err(JsValue::from(Error::new(&e.to_string()))),
-        }
-    }
-}
-
-impl<T, E> ToJsResultWithMsg<T> for Result<T, E> {
-    fn ok_or_js_err_with_msg(self, msg: &str) -> Result<T, JsValue> {
-        match self {
-            Ok(v) => Ok(v),
-            Err(_e) => Err(JsValue::from(Error::new(msg))),
-        }
-    }
 }
 
 fn get_user_id(req: &Request) -> Option<String> {
