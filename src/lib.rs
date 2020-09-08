@@ -5,7 +5,7 @@ use cfg_if::cfg_if;
 use cookie::Cookie;
 use handlebars::Handlebars;
 use http::StatusCode;
-use js_sys::{Array, Error, Function, Promise, Reflect};
+use js_sys::{Array, Error, Promise};
 use lazy_static::lazy_static;
 use serde::{Deserialize, Serialize};
 use std::fmt::Display;
@@ -181,18 +181,6 @@ fn get_user_id(req: &Request) -> Option<String> {
         }
     }
     None
-}
-
-fn wait_until(event: &FetchEvent, promise: &Promise) {
-    // the waitUntil() method is not standard on the FetchEvent so it's not
-    // part of the wasm-bindgen bindings
-    let event_val = JsValue::from(event);
-    let method_key = JsValue::from("waitUntil");
-    let method: Function = Reflect::get(&event_val, &method_key)
-        .unwrap()
-        .dyn_into()
-        .unwrap();
-    method.call1(&event_val, &JsValue::from(promise)).unwrap();
 }
 
 #[derive(Serialize)]
@@ -461,7 +449,7 @@ async fn modify_favorites(
                 // Delete the old user_id favorites from KV
                 if let Some(uid) = orig_user_id {
                     let delete_old_favorites_promise = FavoritesNs::delete(&uid);
-                    wait_until(&event, &delete_old_favorites_promise);
+                    event.wait_until(&delete_old_favorites_promise)?;
                 }
 
                 Ok(JsValue::from(&generate_response("", 302, &headers)))
