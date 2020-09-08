@@ -57,11 +57,6 @@ extern "C" {
     fn delete(key: &str) -> Promise;
 }
 
-#[wasm_bindgen]
-extern "C" {
-    fn fetch(req: &Request) -> Promise;
-}
-
 #[derive(Serialize, Deserialize, Debug)]
 struct Goat {
     // properties from database
@@ -344,14 +339,20 @@ async fn render_favorites(req: Request) -> Result<JsValue, JsValue> {
     Ok(JsValue::from(resp))
 }
 
-fn proxy_image(path: &str) -> Promise {
-    let url = "https://storage.googleapis.com/best_goats".to_owned() + path;
+async fn proxy_image(path: String) -> Result<JsValue, JsValue> {
+    let url = format!("https://storage.googleapis.com/best_goats{}", path);
     let request = match Request::new_with_str(&url) {
         Ok(v) => v,
-        Err(e) => return Promise::reject(&e),
+        Err(e) => return JsFuture::from(Promise::reject(&e)).await,
     };
 
-    fetch(&request)
+    match web_sys::window() {
+        Some(window) => JsFuture::from(window.fetch_with_request(&request)).await,
+        None => generate_error_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Some("Error updating favorites"),
+        ),
+    }
 }
 
 fn render_error(status: StatusCode) -> Promise {
@@ -481,7 +482,7 @@ pub fn main(event: FetchEvent) -> Promise {
             _ => render_error(StatusCode::METHOD_NOT_ALLOWED),
         },
         Some("images") => match method.as_ref() {
-            "get" => proxy_image(&path),
+            "get" => future_to_promise(proxy_image(path)),
             _ => render_error(StatusCode::METHOD_NOT_ALLOWED),
         },
         _ => render_error(StatusCode::NOT_FOUND),
