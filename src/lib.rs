@@ -1,37 +1,21 @@
-extern crate cfg_if;
-extern crate cookie;
-extern crate futures;
-extern crate handlebars;
-extern crate http;
-extern crate js_sys;
-extern crate serde;
-extern crate time;
-extern crate url;
-extern crate wasm_bindgen;
-extern crate wasm_bindgen_futures;
-extern crate web_sys;
-#[macro_use]
-extern crate serde_derive;
-#[macro_use]
-extern crate lazy_static;
-
+mod extensions;
 mod templates;
 mod utils;
 
+use crate::extensions::*;
 use cfg_if::cfg_if;
 use cookie::Cookie;
-use futures::Future;
 use handlebars::Handlebars;
 use http::StatusCode;
-use js_sys::{Array, Error, Function, Promise, Reflect};
-use std::fmt::Display;
+use js_sys::{Array, Promise};
+use lazy_static::lazy_static;
+use serde::{Deserialize, Serialize};
 use time::Duration;
 use url::Url;
 use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
-use wasm_bindgen_futures::future_to_promise;
-use wasm_bindgen_futures::JsFuture;
-use web_sys::{FetchEvent, FormData, Headers, Request, ResponseInit};
+use wasm_bindgen_futures::{future_to_promise as ftp, JsFuture};
+use web_sys::{FetchEvent, FormData, Headers, Request, Response, ResponseInit};
 
 cfg_if! {
     // When the `wee_alloc` feature is enabled, use `wee_alloc` as the global
@@ -73,23 +57,6 @@ extern "C" {
     fn delete(key: &str) -> Promise;
 }
 
-#[wasm_bindgen]
-extern "C" {
-    fn fetch(req: &Request) -> Promise;
-    // TODO
-    fn generate_random_str() -> String;
-}
-
-// As of writing, web-sys does not support creating Response objects, so
-// we define our own wrapper here
-#[wasm_bindgen]
-extern "C" {
-    type Response;
-
-    #[wasm_bindgen(constructor)]
-    fn new(body: &str, init: ResponseInit) -> Response;
-}
-
 #[derive(Serialize, Deserialize, Debug)]
 struct Goat {
     // properties from database
@@ -112,82 +79,30 @@ lazy_static! {
     static ref HBARS: Handlebars = {
         let mut reg = Handlebars::new();
 
-        assert!(
-            reg.register_template_string(BASE_LAYOUT_TEMPLATE, templates::base::BASE_LAYOUT)
-                .is_ok()
-        );
-        assert!(
-            reg.register_template_string(ERROR_PAGE_TEMPLATE, templates::error::ERROR_PAGE)
-                .is_ok()
-        );
-        assert!(
-            reg.register_template_string(
+        assert!(reg
+            .register_template_string(BASE_LAYOUT_TEMPLATE, templates::base::BASE_LAYOUT)
+            .is_ok());
+        assert!(reg
+            .register_template_string(ERROR_PAGE_TEMPLATE, templates::error::ERROR_PAGE)
+            .is_ok());
+        assert!(reg
+            .register_template_string(
                 FAVORITES_PAGE_TEMPLATE,
                 templates::favorites::FAVORITES_PAGE
             )
-            .is_ok()
-        );
-        assert!(
-            reg.register_template_string(
+            .is_ok());
+        assert!(reg
+            .register_template_string(
                 GOAT_LIST_PARTIAL_TEMPLATE,
                 templates::goat_list::GOAT_LIST_PARTIAL
             )
-            .is_ok()
-        );
-        assert!(
-            reg.register_template_string(HOME_PAGE_TEMPLATE, templates::home::HOME_PAGE)
-                .is_ok()
-        );
+            .is_ok());
+        assert!(reg
+            .register_template_string(HOME_PAGE_TEMPLATE, templates::home::HOME_PAGE)
+            .is_ok());
 
         reg
     };
-}
-
-trait ToJsResult<T> {
-    fn ok_or_js_err(self) -> Result<T, JsValue>;
-}
-
-trait ToJsResultWithMsg<T> {
-    fn ok_or_js_err_with_msg(self, msg: &str) -> Result<T, JsValue>;
-}
-
-impl<T> ToJsResult<T> for Option<T> {
-    fn ok_or_js_err(self) -> Result<T, JsValue> {
-        match self {
-            Some(v) => Ok(v),
-            None => Err(JsValue::from(Error::new("expected Some but found None"))),
-        }
-    }
-}
-
-impl<T> ToJsResultWithMsg<T> for Option<T> {
-    fn ok_or_js_err_with_msg(self, msg: &str) -> Result<T, JsValue> {
-        match self {
-            Some(v) => Ok(v),
-            None => Err(JsValue::from(Error::new(msg))),
-        }
-    }
-}
-
-impl<T, E> ToJsResult<T> for Result<T, E>
-where
-    E: Display,
-{
-    fn ok_or_js_err(self) -> Result<T, JsValue> {
-        match self {
-            Ok(v) => Ok(v),
-            Err(e) => Err(JsValue::from(Error::new(&e.to_string()))),
-        }
-    }
-}
-
-impl<T, E> ToJsResultWithMsg<T> for Result<T, E> {
-    fn ok_or_js_err_with_msg(self, msg: &str) -> Result<T, JsValue> {
-        match self {
-            Ok(v) => Ok(v),
-            Err(_e) => Err(JsValue::from(Error::new(msg))),
-        }
-    }
 }
 
 fn get_user_id(req: &Request) -> Option<String> {
@@ -204,18 +119,6 @@ fn get_user_id(req: &Request) -> Option<String> {
         }
     }
     None
-}
-
-fn wait_until(event: &FetchEvent, promise: &Promise) {
-    // the waitUntil() method is not standard on the FetchEvent so it's not
-    // part of the wasm-bindgen bindings
-    let event_val = JsValue::from(event);
-    let method_key = JsValue::from("waitUntil");
-    let method: Function = Reflect::get(&event_val, &method_key)
-        .unwrap()
-        .dyn_into()
-        .unwrap();
-    method.call1(&event_val, &JsValue::from(promise)).unwrap();
 }
 
 #[derive(Serialize)]
@@ -247,11 +150,12 @@ fn get_featured_goats() -> Promise {
     GoatsNs::get("featured", "json")
 }
 
-fn get_favorites_from_user_id(user_id: &Option<String>) -> JsFuture {
-    match user_id {
+async fn get_favorites_from_user_id(user_id: &Option<String>) -> Result<JsValue, JsValue> {
+    let js_fut = match user_id {
         Some(sid) => JsFuture::from(FavoritesNs::get(&sid, "json")),
         None => JsFuture::from(Promise::resolve(&JsValue::from(Array::new()))),
-    }
+    };
+    js_fut.await
 }
 
 fn generate_error_response(status: StatusCode, msg: Option<&str>) -> Result<JsValue, JsValue> {
@@ -282,7 +186,7 @@ fn generate_error_response(status: StatusCode, msg: Option<&str>) -> Result<JsVa
 
     let headers = Headers::new()?;
     headers.append("content-type", "text/html")?;
-    let resp = generate_response(&body, status.as_u16(), &headers);
+    let resp = generate_response(&body, status.as_u16(), &headers)?;
     Ok(JsValue::from(resp))
 }
 
@@ -292,11 +196,11 @@ fn generate_redirect_headers(url: &str) -> Result<Headers, JsValue> {
     Ok(headers)
 }
 
-fn generate_response(body: &str, status: u16, headers: &Headers) -> Response {
+fn generate_response(body: &str, status: u16, headers: &Headers) -> Result<Response, JsValue> {
     let mut init = ResponseInit::new();
     init.status(status);
     init.headers(&JsValue::from(headers));
-    Response::new(body, init)
+    Response::new_with_opt_str_and_init(Some(body), &init)
 }
 
 // Returns the referrer URL if there is one, otherwise
@@ -309,101 +213,99 @@ fn get_referrer_or_orig_url(req: &Request) -> String {
     }
 }
 
-fn render_home(req: &Request) -> Promise {
-    let user_id = get_user_id(req);
-    let favorites_future = get_favorites_from_user_id(&user_id);
-    let all_goats_future = JsFuture::from(get_featured_goats());
+async fn render_home(req: Request) -> Result<JsValue, JsValue> {
+    let user_id = get_user_id(&req);
+    let favorites_value = get_favorites_from_user_id(&user_id).await?;
+    let all_goats_value = JsFuture::from(get_featured_goats()).await?;
 
-    let f = JsFuture::join(favorites_future, all_goats_future).then(|tuple_result| {
-        let (favorites_value, all_goats_value) = tuple_result?;
-        let favorites: Vec<GoatId> = favorites_value.into_serde().ok_or_js_err()?;
-        let all_goats: Vec<Goat> = all_goats_value.into_serde().ok_or_js_err()?;
+    let favorites: Vec<GoatId> = favorites_value.into_serde().ok_or_js_err()?;
+    let all_goats: Vec<Goat> = all_goats_value.into_serde().ok_or_js_err()?;
 
-        #[derive(Serialize)]
-        struct Data {
-            title: &'static str,
-            parent: &'static str,
-            goat_list_template: &'static str,
-            show_favorites: bool,
-            fav_count: usize,
-            goats: Vec<GoatListItem>,
-        }
-        let data = Data {
-            title: DEFAULT_TITLE,
-            parent: BASE_LAYOUT_TEMPLATE,
-            goat_list_template: GOAT_LIST_PARTIAL_TEMPLATE,
-            show_favorites: true,
-            fav_count: favorites.len(),
-            goats: get_goat_list_items(all_goats, &favorites),
-        };
-        let body = HBARS.render(HOME_PAGE_TEMPLATE, &data).ok_or_js_err()?;
+    #[derive(Serialize)]
+    struct Data {
+        title: &'static str,
+        parent: &'static str,
+        goat_list_template: &'static str,
+        show_favorites: bool,
+        fav_count: usize,
+        goats: Vec<GoatListItem>,
+    }
+    let data = Data {
+        title: DEFAULT_TITLE,
+        parent: BASE_LAYOUT_TEMPLATE,
+        goat_list_template: GOAT_LIST_PARTIAL_TEMPLATE,
+        show_favorites: true,
+        fav_count: favorites.len(),
+        goats: get_goat_list_items(all_goats, &favorites),
+    };
+    let body = HBARS.render(HOME_PAGE_TEMPLATE, &data).ok_or_js_err()?;
 
-        let headers = Headers::new()?;
-        headers.append("content-type", "text/html")?;
-        let resp = generate_response(&body, 200, &headers);
+    let headers = Headers::new()?;
+    headers.append("content-type", "text/html")?;
+    let resp = generate_response(&body, 200, &headers)?;
 
-        Ok(JsValue::from(resp))
-    });
-    future_to_promise(f)
+    Ok(JsValue::from(resp))
 }
 
-fn render_favorites(req: &Request) -> Promise {
-    let user_id = get_user_id(req);
-    let favorites_future = get_favorites_from_user_id(&user_id);
-    let all_goats_future = JsFuture::from(get_featured_goats());
+async fn render_favorites(req: Request) -> Result<JsValue, JsValue> {
+    let user_id = get_user_id(&req);
+    let favorites_value = get_favorites_from_user_id(&user_id).await?;
+    let all_goats_value = JsFuture::from(get_featured_goats()).await?;
 
-    let f = JsFuture::join(favorites_future, all_goats_future).then(|tuple_result| {
-        let (favorites_value, all_goats_value) = tuple_result?;
-        let favorites: Vec<GoatId> = favorites_value.into_serde().ok_or_js_err()?;
-        let all_goats: Vec<Goat> = all_goats_value.into_serde().ok_or_js_err()?;
+    let favorites: Vec<GoatId> = favorites_value.into_serde().ok_or_js_err()?;
+    let all_goats: Vec<Goat> = all_goats_value.into_serde().ok_or_js_err()?;
 
-        let favorite_goats = all_goats
-            .into_iter()
-            .filter(|goat| favorites.contains(&goat.id))
-            .collect();
+    let favorite_goats = all_goats
+        .into_iter()
+        .filter(|goat| favorites.contains(&goat.id))
+        .collect();
 
-        #[derive(Serialize)]
-        struct Data {
-            title: String,
-            parent: &'static str,
-            goat_list_template: &'static str,
-            show_favorites: bool,
-            fav_count: usize,
-            has_favorites: bool,
-            goats: Vec<GoatListItem>,
-        }
-        let data = Data {
-            title: format!("{} - {}", "Favorites", DEFAULT_TITLE),
-            parent: BASE_LAYOUT_TEMPLATE,
-            goat_list_template: GOAT_LIST_PARTIAL_TEMPLATE,
-            show_favorites: true,
-            fav_count: favorites.len(),
-            has_favorites: favorites.len() > 0,
-            goats: get_goat_list_items(favorite_goats, &favorites),
-        };
-        let body = HBARS
-            .render(FAVORITES_PAGE_TEMPLATE, &data)
-            .ok_or_js_err()?;
+    #[derive(Serialize)]
+    struct Data {
+        title: String,
+        parent: &'static str,
+        goat_list_template: &'static str,
+        show_favorites: bool,
+        fav_count: usize,
+        has_favorites: bool,
+        goats: Vec<GoatListItem>,
+    }
+    let data = Data {
+        title: format!("{} - {}", "Favorites", DEFAULT_TITLE),
+        parent: BASE_LAYOUT_TEMPLATE,
+        goat_list_template: GOAT_LIST_PARTIAL_TEMPLATE,
+        show_favorites: true,
+        fav_count: favorites.len(),
+        has_favorites: favorites.len() > 0,
+        goats: get_goat_list_items(favorite_goats, &favorites),
+    };
+    let body = HBARS
+        .render(FAVORITES_PAGE_TEMPLATE, &data)
+        .ok_or_js_err()?;
 
-        let headers = Headers::new()?;
-        headers.append("content-type", "text/html")?;
-        let headers = Headers::new()?;
-        headers.append("content-type", "text/html")?;
-        let resp = generate_response(&body, 200, &headers);
+    let headers = Headers::new()?;
+    headers.append("content-type", "text/html")?;
+    let headers = Headers::new()?;
+    headers.append("content-type", "text/html")?;
+    let resp = generate_response(&body, 200, &headers)?;
 
-        Ok(JsValue::from(resp))
-    });
-    future_to_promise(f)
+    Ok(JsValue::from(resp))
 }
 
-fn proxy_image(path: &str) -> Promise {
-    let url = "https://storage.googleapis.com/best_goats".to_owned() + path;
+async fn proxy_image(path: String) -> Result<JsValue, JsValue> {
+    let url = format!("https://storage.googleapis.com/best_goats{}", path);
     let request = match Request::new_with_str(&url) {
         Ok(v) => v,
-        Err(e) => return Promise::reject(&e),
+        Err(e) => return JsFuture::from(Promise::reject(&e)).await,
     };
 
-    fetch(&request)
+    match web_sys::window() {
+        Some(window) => JsFuture::from(window.fetch_with_request(&request)).await,
+        None => generate_error_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Some("Error updating favorites"),
+        ),
+    }
 }
 
 fn render_error(status: StatusCode) -> Promise {
@@ -414,136 +316,128 @@ fn render_error(status: StatusCode) -> Promise {
 }
 
 enum FavoritesModification {
-    AddFavorite,
-    RemoveFavorite,
+    Add,
+    Remove,
 }
 
-fn modify_favorites(event: FetchEvent, modification: FavoritesModification) -> Promise {
+async fn modify_favorites(
+    event: FetchEvent,
+    modification: FavoritesModification,
+) -> Result<JsValue, JsValue> {
     let req = &event.request();
     let orig_user_id = get_user_id(req);
     let redirect_url = get_referrer_or_orig_url(req);
-    let form_data_future = match req
+    let form_data_fut = match req
         .form_data()
         .ok_or_js_err_with_msg("failed to get form_data")
     {
-        Ok(v) => JsFuture::from(v),
-        Err(e) => JsFuture::from(Promise::reject(&e)),
+        Ok(v) => v,
+        Err(e) => Promise::reject(&e),
     };
-    let favorites_future = get_favorites_from_user_id(&orig_user_id);
+    let form_data_value = JsFuture::from(form_data_fut).await?;
+    let favorites_value = get_favorites_from_user_id(&orig_user_id).await?;
 
-    let f = JsFuture::join(form_data_future, favorites_future).then(move |tuple_result| {
-        let (form_data_value, favorites_value) = tuple_result?;
-        let form_data: FormData = form_data_value.dyn_into()?;
-        let mut favorites: Vec<GoatId> = favorites_value.into_serde().ok_or_js_err()?;
-        let goat_id_str: String = match form_data.get("id").as_string() {
-            Some(v) => v,
-            None => {
-                return generate_error_response(
-                    StatusCode::BAD_REQUEST,
-                    Some("Missing id parameter"),
-                );
-            }
-        };
-        let goat_id: GoatId = match goat_id_str.parse() {
-            Ok(v) => v,
-            Err(_e) => {
-                return generate_error_response(
-                    StatusCode::BAD_REQUEST,
-                    Some("Invalid id parameter"),
-                );
-            }
-        };
-
-        let modified = match modification {
-            FavoritesModification::AddFavorite => {
-                if !favorites.contains(&goat_id) {
-                    favorites.insert(0, goat_id);
-                    true
-                } else {
-                    false
-                }
-            }
-            FavoritesModification::RemoveFavorite => {
-                if let Some(idx) = favorites.iter().position(|x| *x == goat_id) {
-                    favorites.remove(idx);
-                    true
-                } else {
-                    false
-                }
-            }
-        };
-
-        if !modified {
-            let headers = generate_redirect_headers(&redirect_url)?;
-            let resp = generate_response("", 302, &headers);
-            return Ok(JsValue::from(&resp));
-        } else {
-            let new_user_id = generate_random_str();
-            let favorites_json = serde_json::to_string(&favorites).ok_or_js_err()?;
-            let update_favorites_promise = FavoritesNs::put(&new_user_id, &favorites_json);
-            let future =
-                JsFuture::from(update_favorites_promise).then(move |result| match result {
-                    Ok(_v) => {
-                        let cookie = Cookie::build(USER_ID_COOKIE, new_user_id)
-                            .http_only(true)
-                            .secure(true)
-                            .max_age(Duration::days(365 * 20))
-                            .finish();
-                        let headers = generate_redirect_headers(&redirect_url)?;
-                        headers.set("set-cookie", &cookie.to_string())?;
-
-                        // Delete the old user_id favorites from KV
-                        if let Some(uid) = orig_user_id {
-                            let delete_old_favorites_promise = FavoritesNs::delete(&uid);
-                            wait_until(&event, &delete_old_favorites_promise);
-                        }
-
-                        Ok(JsValue::from(&generate_response("", 302, &headers)))
-                    }
-                    Err(_e) => generate_error_response(
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        Some("Error updating favorites"),
-                    ),
-                });
-
-            let promise = future_to_promise(future);
-            return Ok(JsValue::from(&promise));
+    let form_data: FormData = form_data_value.dyn_into()?;
+    let mut favorites: Vec<GoatId> = favorites_value.into_serde().ok_or_js_err()?;
+    let goat_id_str: String = match form_data.get("id").as_string() {
+        Some(v) => v,
+        None => {
+            return generate_error_response(StatusCode::BAD_REQUEST, Some("Missing id parameter"));
         }
-    });
+    };
+    let goat_id: GoatId = match goat_id_str.parse() {
+        Ok(v) => v,
+        Err(_e) => {
+            return generate_error_response(StatusCode::BAD_REQUEST, Some("Invalid id parameter"));
+        }
+    };
 
-    future_to_promise(f)
+    let modified = match modification {
+        FavoritesModification::Add => {
+            if !favorites.contains(&goat_id) {
+                favorites.insert(0, goat_id);
+                true
+            } else {
+                false
+            }
+        }
+        FavoritesModification::Remove => {
+            if let Some(idx) = favorites.iter().position(|x| *x == goat_id) {
+                favorites.remove(idx);
+                true
+            } else {
+                false
+            }
+        }
+    };
+
+    if !modified {
+        let headers = generate_redirect_headers(&redirect_url)?;
+        let resp = generate_response("", 302, &headers)?;
+        return Ok(JsValue::from(&resp));
+    } else {
+        let new_user_id = uuid::Uuid::new_v4().to_string();
+        let favorites_json = serde_json::to_string(&favorites).ok_or_js_err()?;
+        let update_favorites_promise: Promise = FavoritesNs::put(&new_user_id, &favorites_json);
+        let update_favorites_value = JsFuture::from(update_favorites_promise).await;
+        match update_favorites_value {
+            Ok(_v) => {
+                let cookie = Cookie::build(USER_ID_COOKIE, new_user_id)
+                    .http_only(true)
+                    .secure(true)
+                    .max_age(Duration::days(365 * 20))
+                    .finish();
+                let headers = generate_redirect_headers(&redirect_url)?;
+                headers.set("set-cookie", &cookie.to_string())?;
+
+                // Delete the old user_id favorites from KV
+                if let Some(uid) = orig_user_id {
+                    let delete_old_favorites_promise = FavoritesNs::delete(&uid);
+                    event.wait_until(&delete_old_favorites_promise)?;
+                }
+                let resp = &generate_response("", 302, &headers)?;
+                Ok(JsValue::from(resp))
+            }
+            Err(_e) => generate_error_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Some("Error updating favorites"),
+            ),
+        }
+    }
 }
 
 #[wasm_bindgen]
 pub fn main(event: FetchEvent) -> Promise {
-    let req = &event.request();
+    let e = &event;
+    let req = e.request();
     let url = match Url::parse(&req.url()).ok_or_js_err() {
         Ok(v) => v,
         Err(e) => return Promise::reject(&e),
     };
     let path = url.path().to_lowercase();
     let method = req.method().to_lowercase();
+    let not_allowed = || render_error(StatusCode::METHOD_NOT_ALLOWED);
 
     match path.split("/").nth(1) {
         Some("") => match method.as_ref() {
-            "get" => render_home(req),
-            _ => render_error(StatusCode::METHOD_NOT_ALLOWED),
+            "get" => ftp(render_home(req)),
+            _ => not_allowed(),
         },
         Some("favorites") => match method.as_ref() {
-            "get" => render_favorites(req),
-            _ => render_error(StatusCode::METHOD_NOT_ALLOWED),
+            "get" => ftp(render_favorites(req)),
+            _ => not_allowed(),
         },
         Some("add-favorite") => match method.as_ref() {
-            "post" => modify_favorites(event, FavoritesModification::AddFavorite),
-            _ => render_error(StatusCode::METHOD_NOT_ALLOWED),
+            "post" => ftp(modify_favorites(event, FavoritesModification::Add)),
+            _ => not_allowed(),
         },
         Some("remove-favorite") => match method.as_ref() {
-            "post" => modify_favorites(event, FavoritesModification::RemoveFavorite),
-            _ => render_error(StatusCode::METHOD_NOT_ALLOWED),
+            "post" => ftp(modify_favorites(event, FavoritesModification::Remove)),
+            _ => not_allowed(),
         },
         Some("images") => match method.as_ref() {
-            "get" => proxy_image(&path),
-            _ => render_error(StatusCode::METHOD_NOT_ALLOWED),
+            "get" => ftp(proxy_image(path)),
+            _ => not_allowed(),
         },
         _ => render_error(StatusCode::NOT_FOUND),
     }
