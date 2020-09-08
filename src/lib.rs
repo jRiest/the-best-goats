@@ -1,19 +1,3 @@
-extern crate cfg_if;
-extern crate cookie;
-extern crate futures;
-extern crate handlebars;
-extern crate http;
-extern crate js_sys;
-#[macro_use]
-extern crate serde;
-extern crate time;
-extern crate url;
-extern crate wasm_bindgen;
-extern crate wasm_bindgen_futures;
-extern crate web_sys;
-#[macro_use]
-extern crate lazy_static;
-
 mod templates;
 mod utils;
 
@@ -22,6 +6,8 @@ use cookie::Cookie;
 use handlebars::Handlebars;
 use http::StatusCode;
 use js_sys::{Array, Error, Function, Promise, Reflect};
+use lazy_static::lazy_static;
+use serde::{Deserialize, Serialize};
 use std::fmt::Display;
 use time::Duration;
 use url::Url;
@@ -74,8 +60,6 @@ extern "C" {
 #[wasm_bindgen]
 extern "C" {
     fn fetch(req: &Request) -> Promise;
-    // TODO
-    fn generate_random_str() -> String;
 }
 
 // As of writing, web-sys does not support creating Response objects, so
@@ -400,8 +384,8 @@ fn render_error(status: StatusCode) -> Promise {
 }
 
 enum FavoritesModification {
-    AddFavorite,
-    RemoveFavorite,
+    Add,
+    Remove,
 }
 
 async fn modify_favorites(
@@ -411,14 +395,14 @@ async fn modify_favorites(
     let req = &event.request();
     let orig_user_id = get_user_id(req);
     let redirect_url = get_referrer_or_orig_url(req);
-    let form_data_value = match req
+    let form_data_fut = match req
         .form_data()
         .ok_or_js_err_with_msg("failed to get form_data")
     {
-        Ok(v) => JsFuture::from(v),
-        Err(e) => JsFuture::from(Promise::reject(&e)),
-    }
-    .await?;
+        Ok(v) => v,
+        Err(e) => Promise::reject(&e),
+    };
+    let form_data_value = JsFuture::from(form_data_fut).await?;
     let favorites_value = get_favorites_from_user_id(&orig_user_id).await?;
 
     let form_data: FormData = form_data_value.dyn_into()?;
@@ -437,7 +421,7 @@ async fn modify_favorites(
     };
 
     let modified = match modification {
-        FavoritesModification::AddFavorite => {
+        FavoritesModification::Add => {
             if !favorites.contains(&goat_id) {
                 favorites.insert(0, goat_id);
                 true
@@ -445,7 +429,7 @@ async fn modify_favorites(
                 false
             }
         }
-        FavoritesModification::RemoveFavorite => {
+        FavoritesModification::Remove => {
             if let Some(idx) = favorites.iter().position(|x| *x == goat_id) {
                 favorites.remove(idx);
                 true
@@ -460,11 +444,11 @@ async fn modify_favorites(
         let resp = generate_response("", 302, &headers);
         return Ok(JsValue::from(&resp));
     } else {
-        let new_user_id = generate_random_str();
+        let new_user_id = uuid::Uuid::new_v4().to_string();
         let favorites_json = serde_json::to_string(&favorites).ok_or_js_err()?;
         let update_favorites_promise: Promise = FavoritesNs::put(&new_user_id, &favorites_json);
         let update_favorites_value = JsFuture::from(update_favorites_promise).await;
-        let f = match update_favorites_value {
+        match update_favorites_value {
             Ok(_v) => {
                 let cookie = Cookie::build(USER_ID_COOKIE, new_user_id)
                     .http_only(true)
@@ -486,8 +470,7 @@ async fn modify_favorites(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Some("Error updating favorites"),
             ),
-        };
-        f
+        }
     }
 }
 
@@ -512,16 +495,11 @@ pub fn main(event: FetchEvent) -> Promise {
             _ => render_error(StatusCode::METHOD_NOT_ALLOWED),
         },
         Some("add-favorite") => match method.as_ref() {
-            "post" => {
-                future_to_promise(modify_favorites(event, FavoritesModification::AddFavorite))
-            }
+            "post" => future_to_promise(modify_favorites(event, FavoritesModification::Add)),
             _ => render_error(StatusCode::METHOD_NOT_ALLOWED),
         },
         Some("remove-favorite") => match method.as_ref() {
-            "post" => future_to_promise(modify_favorites(
-                event,
-                FavoritesModification::RemoveFavorite,
-            )),
+            "post" => future_to_promise(modify_favorites(event, FavoritesModification::Remove)),
             _ => render_error(StatusCode::METHOD_NOT_ALLOWED),
         },
         Some("images") => match method.as_ref() {
