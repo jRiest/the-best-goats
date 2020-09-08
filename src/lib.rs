@@ -14,7 +14,7 @@ use time::Duration;
 use url::Url;
 use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
-use wasm_bindgen_futures::{future_to_promise, JsFuture};
+use wasm_bindgen_futures::{future_to_promise as ftp, JsFuture};
 use web_sys::{FetchEvent, FormData, Headers, Request, Response, ResponseInit};
 
 cfg_if! {
@@ -416,27 +416,28 @@ pub fn main(event: FetchEvent) -> Promise {
     };
     let path = url.path().to_lowercase();
     let method = req.method().to_lowercase();
+    let not_allowed = || render_error(StatusCode::METHOD_NOT_ALLOWED);
 
     match path.split("/").nth(1) {
         Some("") => match method.as_ref() {
-            "get" => future_to_promise(render_home(req)),
-            _ => render_error(StatusCode::METHOD_NOT_ALLOWED),
+            "get" => ftp(render_home(req)),
+            _ => not_allowed(),
         },
         Some("favorites") => match method.as_ref() {
-            "get" => future_to_promise(render_favorites(req)),
-            _ => render_error(StatusCode::METHOD_NOT_ALLOWED),
+            "get" => ftp(render_favorites(req)),
+            _ => not_allowed(),
         },
         Some("add-favorite") => match method.as_ref() {
-            "post" => future_to_promise(modify_favorites(event, FavoritesModification::Add)),
-            _ => render_error(StatusCode::METHOD_NOT_ALLOWED),
+            "post" => ftp(modify_favorites(event, FavoritesModification::Add)),
+            _ => not_allowed(),
         },
         Some("remove-favorite") => match method.as_ref() {
-            "post" => future_to_promise(modify_favorites(event, FavoritesModification::Remove)),
-            _ => render_error(StatusCode::METHOD_NOT_ALLOWED),
+            "post" => ftp(modify_favorites(event, FavoritesModification::Remove)),
+            _ => not_allowed(),
         },
         Some("images") => match method.as_ref() {
-            "get" => future_to_promise(proxy_image(path)),
-            _ => render_error(StatusCode::METHOD_NOT_ALLOWED),
+            "get" => ftp(proxy_image(path)),
+            _ => not_allowed(),
         },
         _ => render_error(StatusCode::NOT_FOUND),
     }
