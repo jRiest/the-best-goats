@@ -46,6 +46,7 @@ features = [
   'FormData',
   'Headers',
   'Request',
+  'Response',
   'ResponseInit',
 ]
 

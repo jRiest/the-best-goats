@@ -15,7 +15,7 @@ use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
 use wasm_bindgen_futures::future_to_promise;
 use wasm_bindgen_futures::JsFuture;
-use web_sys::{FetchEvent, FormData, Headers, Request, ResponseInit};
+use web_sys::{FetchEvent, FormData, Headers, Request, Response, ResponseInit};
 
 cfg_if! {
     // When the `wee_alloc` feature is enabled, use `wee_alloc` as the global
@@ -60,16 +60,6 @@ extern "C" {
 #[wasm_bindgen]
 extern "C" {
     fn fetch(req: &Request) -> Promise;
-}
-
-// As of writing, web-sys does not support creating Response objects, so
-// we define our own wrapper here
-#[wasm_bindgen]
-extern "C" {
-    type Response;
-
-    #[wasm_bindgen(constructor)]
-    fn new(body: &str, init: ResponseInit) -> Response;
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -248,7 +238,7 @@ fn generate_error_response(status: StatusCode, msg: Option<&str>) -> Result<JsVa
 
     let headers = Headers::new()?;
     headers.append("content-type", "text/html")?;
-    let resp = generate_response(&body, status.as_u16(), &headers);
+    let resp = generate_response(&body, status.as_u16(), &headers)?;
     Ok(JsValue::from(resp))
 }
 
@@ -258,11 +248,11 @@ fn generate_redirect_headers(url: &str) -> Result<Headers, JsValue> {
     Ok(headers)
 }
 
-fn generate_response(body: &str, status: u16, headers: &Headers) -> Response {
+fn generate_response(body: &str, status: u16, headers: &Headers) -> Result<Response, JsValue> {
     let mut init = ResponseInit::new();
     init.status(status);
     init.headers(&JsValue::from(headers));
-    Response::new(body, init)
+    Response::new_with_opt_str_and_init(Some(body), &init)
 }
 
 // Returns the referrer URL if there is one, otherwise
@@ -304,7 +294,7 @@ async fn render_home(req: Request) -> Result<JsValue, JsValue> {
 
     let headers = Headers::new()?;
     headers.append("content-type", "text/html")?;
-    let resp = generate_response(&body, 200, &headers);
+    let resp = generate_response(&body, 200, &headers)?;
 
     Ok(JsValue::from(resp))
 }
@@ -349,7 +339,7 @@ async fn render_favorites(req: Request) -> Result<JsValue, JsValue> {
     headers.append("content-type", "text/html")?;
     let headers = Headers::new()?;
     headers.append("content-type", "text/html")?;
-    let resp = generate_response(&body, 200, &headers);
+    let resp = generate_response(&body, 200, &headers)?;
 
     Ok(JsValue::from(resp))
 }
@@ -429,7 +419,7 @@ async fn modify_favorites(
 
     if !modified {
         let headers = generate_redirect_headers(&redirect_url)?;
-        let resp = generate_response("", 302, &headers);
+        let resp = generate_response("", 302, &headers)?;
         return Ok(JsValue::from(&resp));
     } else {
         let new_user_id = uuid::Uuid::new_v4().to_string();
@@ -451,8 +441,8 @@ async fn modify_favorites(
                     let delete_old_favorites_promise = FavoritesNs::delete(&uid);
                     event.wait_until(&delete_old_favorites_promise)?;
                 }
-
-                Ok(JsValue::from(&generate_response("", 302, &headers)))
+                let resp = &generate_response("", 302, &headers)?;
+                Ok(JsValue::from(resp))
             }
             Err(_e) => generate_error_response(
                 StatusCode::INTERNAL_SERVER_ERROR,
